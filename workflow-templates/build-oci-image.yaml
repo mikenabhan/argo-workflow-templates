@@ -22,15 +22,30 @@ spec:
         value: https://github.com/argoproj/argo-workflows.git
       - name: revision
         value: v2.1.1"
-      - name: oci-registry
-        value: docker.io
-      - name: oci-image
+      - name: docker-image
         value: templates/workflow
-      - name: oci-tag
+      - name: docker-tag
         value: v1.1.1
-      - name: push-image
-        value: false
   templates:
+    - name: git-clone
+      inputs:
+        artifacts:
+          - name: argo-source
+            path: /src
+            git:
+              repo: "{{workflow.parameters.repo}}"
+              revision: "{{workflow.parameters.revision}}"
+      container:
+        image: golang:1.10
+        command:
+          - sh
+          - -c
+        args:
+          - cp -r /src/* .
+        workingDir: /workdir
+        volumeMounts:
+          - name: workdir
+            mountPath: /workdir
     - name: ci
       dag:
         tasks:
@@ -45,47 +60,9 @@ spec:
             dependencies:
               - git-clone
               - ls
-          - name: trivy-image-scan
-            template: trivy-image-scan
-            dependencies:
-              - build
-          - name: trivy-filesystem-scan
-            template: trivy-filesystem-scan
-            dependencies:
-              - build
-          - name: push-image
-            template: push-image
-            when: " == true"
-            dependencies:
-              - trivy-filesystem-scan
-              - trivy-image-scan
-    - name: git-clone
-      inputs:
-        parameters:
-          - name: repo
-            value: ""
-          - name: revision
-            value: ""
-        artifacts:
-          - name: argo-source
-            path: /src
-            git:
-              repo: ""
-              revision: ""
-      container:
-        image: alpine:3.17
-        command:
-          - sh
-          - -c
-        args:
-          - cp -r /src/* .
-        workingDir: /workdir
-        volumeMounts:
-          - name: workdir
-            mountPath: /workdir
     - name: ls
       container:
-        image: alpine:3.17
+        image: golang:1.10
         command:
           - sh
           - -c
@@ -96,91 +73,13 @@ spec:
           - name: workdir
             mountPath: /workdir
     - name: build
-      inputs:
-        parameters:
-          - name: oci-image
-            value: ""
-          - name: oci-tag
-            value: ""
       container:
         image: gcr.io/kaniko-project/executor:latest
         args:
           - --context=/workdir
-          - --destination=:
+          - --destination={{workflow.parameters.docker-image}}:{{workflow.parameters.docker-tag}}
           - --no-push
-          - --tar-path=/workdir/.tar
         workingDir: /workdir
-        volumeMounts:
-          - name: workdir
-            mountPath: /workdir
-    - name: trivy-image-scan
-      inputs:
-        parameters:
-          - name: oci-tag
-            value: ""
-      container:
-        image: aquasec/trivy
-        args:
-          - image
-          - --input=/workdir/.tar
-        env:
-          - name: DOCKER_HOST
-            value: tcp://127.0.0.1:2375
-        volumeMounts:
-          - name: workdir
-            mountPath: /workdir
-      sidecars:
-        - name: dind
-          image: docker:23.0.1-dind
-          command:
-            - dockerd-entrypoint.sh
-          env:
-            - name: DOCKER_TLS_CERTDIR
-              value: ""
-          securityContext:
-            privileged: true
-          mirrorVolumeMounts: true
-    - name: trivy-filesystem-scan
-      inputs:
-        parameters:
-          - name: oci-tag
-            value: ""
-      container:
-        image: aquasec/trivy
-        args:
-          - filesystem
-          - /workdir
-          - --ignorefile=/workdir/.tar
-        volumeMounts:
-          - name: workdir
-            mountPath: /workdir
-    - name: push-image
-      inputs:
-        parameters:
-          - name: oci-tag
-            value: ""
-          - name: oci-image
-            value: ""
-          - name: oci-registry
-            value: ""
-      script:
-        image: gcr.io/go-containerregistry/crane:debug
-        env:
-          - name: OCI_REGISTRY_USER
-            valueFrom:
-              secretKeyRef:
-                name: registry-credentials
-                key: username
-          - name: OCI_REGISTRY_PASSWORD
-            valueFrom:
-              secretKeyRef:
-                name: registry-credentials
-                key: password
-        command:
-          - sh
-        source: >
-          crane auth login -u $OCI_REGISTRY_USER -p $OCI_REGISTRY_PASSWORD 
-          crane push /workdir/.tar /:
         volumeMounts:
           - name: workdir
             mountPath: /workdir
